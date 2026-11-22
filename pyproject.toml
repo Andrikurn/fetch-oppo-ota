@@ -1,0 +1,36 @@
+[project]
+name = "fetch-oppo-ota"
+version = "0.1.0"
+description = "Interactive TUI and CLI downloader for OPPO, OnePlus, and realme Full OTA packages with multi-connection, resume, parallel downloads, and speed limiting"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+keywords = ["oppo", "oneplus", "realme", "ota", "coloros", "oxygenos", "downloader", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "httpx>=0.27.0",
+    "platformdirs>=4.0.0",
+    "rich>=13.7.0",
+    "textual>=0.80.0",
+]
+
+[project.scripts]
+fetch-oppo-ota = "fetch_oppo_ota.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fetch_oppo_ota"]

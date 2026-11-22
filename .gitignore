@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Downloads & resume state
+downloads/
+*.part
+*.ota.state.json
+*.zip
+
+# Editors & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
