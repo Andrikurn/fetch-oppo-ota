@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -25,6 +26,7 @@ from textual.widgets import (
 from .api import OxygenUpdaterApi, pick_default_full_method
 from .config import AppSettings, save_settings
 from .downloader import DownloadManager
+from .oplus_api import OplusOtaClient
 from .models import (
     Device,
     DownloadJob,
@@ -194,6 +196,121 @@ class DeviceGroup:
         return ", ".join(seen)
 
 
+class DirectOppoModal(ModalScreen[dict[str, Any] | None]):
+    """Modal for querying OPPO's official update/v3 servers directly."""
+
+    CSS = """
+    DirectOppoModal {
+        align: center middle;
+    }
+    #direct-dialog {
+        width: 62;
+        height: auto;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
+    #direct-title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    .direct-row {
+        height: 3;
+        align: left middle;
+    }
+    .direct-label {
+        width: 24;
+        color: $text-muted;
+    }
+    .direct-row Input, .direct-row Select {
+        width: 1fr;
+    }
+    #direct-error {
+        color: $error;
+        height: auto;
+    }
+    #direct-buttons {
+        height: auto;
+        margin-top: 1;
+        align: right middle;
+    }
+    #direct-buttons Button {
+        margin-left: 1;
+        height: 3;
+        border: none;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="direct-dialog"):
+            yield Static("Direct OPPO Server Query (update/v3)", id="direct-title")
+
+            with Horizontal(classes="direct-row"):
+                yield Label("Model (e.g. CPH2791)", classes="direct-label")
+                yield Input(placeholder="CPH2791", id="inp-model")
+
+            with Horizontal(classes="direct-row"):
+                yield Label("Region", classes="direct-label")
+                yield Select(
+                    [("Global (GL)", "GL"), ("Europe (EU)", "EU"), ("India (IN)", "IN"), ("China (CN)", "CN")],
+                    value="GL",
+                    allow_blank=False,
+                    id="inp-region",
+                )
+
+            with Horizontal(classes="direct-row"):
+                yield Label("ColorOS Major (11-16)", classes="direct-label")
+                yield Input(value="15", id="inp-coloros")
+
+            with Horizontal(classes="direct-row"):
+                yield Label("OTA Version (optional)", classes="direct-label")
+                yield Input(placeholder="Auto-generated if blank", id="inp-otaver")
+
+            with Horizontal(classes="direct-row"):
+                yield Label("NV Carrier ID (optional)", classes="direct-label")
+                yield Input(placeholder="e.g. 00110011 (auto if blank)", id="inp-nvid")
+
+            yield Static("", id="direct-error")
+            with Horizontal(id="direct-buttons"):
+                yield Button("Cancel", flat=True, id="btn-direct-cancel")
+                yield Button("Query", variant="primary", flat=True, id="btn-direct-query")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-direct-cancel")
+    def _on_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#btn-direct-query")
+    def _on_query(self) -> None:
+        model = self.query_one("#inp-model", Input).value.strip().upper()
+        region = str(self.query_one("#inp-region", Select).value)
+        ota_ver = self.query_one("#inp-otaver", Input).value.strip() or None
+        nv_id = self.query_one("#inp-nvid", Input).value.strip() or None
+        try:
+            coloros = int(self.query_one("#inp-coloros", Input).value.strip())
+            if not model:
+                raise ValueError("Model number is required (e.g. CPH2791).")
+            if not (11 <= coloros <= 16):
+                raise ValueError("ColorOS major version must be 11-16.")
+        except ValueError as exc:
+            self.query_one("#direct-error", Static).update(str(exc))
+            return
+
+        self.dismiss(
+            {
+                "model": model,
+                "region": region,
+                "coloros_major": coloros,
+                "ota_version": ota_ver,
+                "nv_id": nv_id,
+            }
+        )
+
+
 class FetchOtaApp(App[None]):
     """Clean single-screen TUI for browsing and downloading OTAs."""
 
@@ -280,6 +397,7 @@ class FetchOtaApp(App[None]):
 
     BINDINGS = [
         Binding("/", "focus_search", "Search", show=True),
+        Binding("ctrl+o", "open_direct_oppo", "Direct OPPO", show=True),
         Binding("d", "queue_download", "Download", show=True),
         Binding("p", "toggle_pause", "Pause/Resume", show=True),
         Binding("x", "cancel_download", "Cancel", show=True),
@@ -306,6 +424,7 @@ class FetchOtaApp(App[None]):
         self.verify_md5 = verify_md5
 
         self.api = OxygenUpdaterApi()
+        self.oplus_api = OplusOtaClient()
         self.manager = DownloadManager(
             self.api,
             max_parallel=max_parallel,
@@ -399,6 +518,7 @@ class FetchOtaApp(App[None]):
     async def on_unmount(self) -> None:
         await self.manager.aclose()
         await self.api.aclose()
+        await self.oplus_api.aclose()
 
     # ── Device Browsing & Grouping ─────────────────────────────────────
 
@@ -563,6 +683,52 @@ class FetchOtaApp(App[None]):
     @on(Button.Pressed, "#btn-download")
     def _on_download_pressed(self) -> None:
         self.action_queue_download()
+
+    def action_open_direct_oppo(self) -> None:
+        def _on_result(params: dict[str, Any] | None) -> None:
+            if not params:
+                return
+            self._run_direct_oppo_query(params)
+
+        self.push_screen(DirectOppoModal(), _on_result)
+
+    @work(exclusive=True)
+    async def _run_direct_oppo_query(self, params: dict[str, Any]) -> None:
+        summary = self.query_one("#ota-summary", Static)
+        changelog = self.query_one("#changelog-text", Static)
+        btn = self.query_one("#btn-download", Button)
+        btn.disabled = True
+        model = params["model"]
+        region = params["region"]
+        summary.update(f"Querying OPPO {region} server directly for [b]{model}[/b]...")
+        changelog.update("")
+
+        try:
+            update = await self.oplus_api.query_latest_ota(
+                model=model,
+                region=region,
+                ota_version=params.get("ota_version"),
+                coloros_major=params["coloros_major"],
+                nv_id=params.get("nv_id"),
+            )
+            self._selected_device = Device(
+                id=0,
+                name=f"{model} ({region})",
+                product_names=[model],
+            )
+            self._selected_method = UpdateMethod(id=0, name=f"Direct OPPO ({region})")
+            self._current_update = update
+            summary.update(
+                f"[b]{model} [{region}][/b]  •  {update.version_number or 'Unknown version'}  [dim](Direct OPPO)[/dim]\n"
+                f"OTA: {update.ota_version_number or 'N/A'}  •  "
+                f"Size: [b]{format_bytes(update.download_size)}[/b]\n"
+                f"File: {update.filename or 'N/A'}"
+            )
+            changelog.update(update.changelog or "(No details)")
+            btn.disabled = not bool(update.download_url)
+            self.notify(f"Found {update.version_number or model} from OPPO {region}")
+        except Exception as exc:
+            summary.update(f"[red]Direct OPPO query failed:[/red] {exc}")
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()

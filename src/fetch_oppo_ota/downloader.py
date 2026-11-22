@@ -352,6 +352,11 @@ class DownloadManager:
             return length, False
 
     async def _refresh_url(self, job: DownloadJob) -> str:
+        if job.device_id <= 0:
+            # Direct OPPO server job (no Oxygen Updater backend refresh needed)
+            if job.url:
+                return job.url
+            raise RuntimeError("No download URL available")
         lock = self._refresh_locks.setdefault(job.job_id, asyncio.Lock())
         async with lock:
             fresh = await self.api.get_fresh_download_url(

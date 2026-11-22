@@ -4,6 +4,9 @@ A fast, clean **TUI & CLI downloader** for **OPPO, OnePlus, and realme** Full OT
 
 ## Features
 
+- **Dual OTA sources**:
+  - **Oxygen Updater catalog**: Browse & live-search OPPO, OnePlus, and realme devices grouped by model.
+  - **Direct OPPO / Oplus server query (`Ctrl+O` / `direct`)**: Query OPPO's official `update/v5` (mobile) and `update/v3` (PC) endpoints directly across `GL`, `EU`, `IN`, and `CN` regions with optional custom OTA version and NV Carrier ID.
 - **Clean single-screen TUI**:
   - Browse & live-search devices grouped by model (regions stay hidden until you select a device with regional variants).
   - Deduplicated base model numbers (e.g. `CPH2791` instead of `CPH2791EEA, CPH2791IN, ...`).
@@ -62,6 +65,7 @@ uv run fetch-oppo-ota -o ~/otas -c 8 -p 3 --global-limit 20M --file-limit 10M
 | --- | --- |
 | `/` | Focus the search bar |
 | `Enter` | Select device / jump from search to device list |
+| `Ctrl+O` | Direct OPPO server query (`update/v5` & `update/v3`) |
 | `d` | Start downloading the selected OTA |
 | `p` | Pause / Resume selected download |
 | `x` | Cancel selected download |
@@ -79,6 +83,18 @@ uv run fetch-oppo-ota info --device-id <ID>
 
 # Download one or more devices in parallel with Rich progress bars
 uv run fetch-oppo-ota download --device-id <ID1> --device-id <ID2> -c 8 -p 2 --global-limit 15M
+
+# Query OPPO's official update/v5 & v3 servers directly (no Oxygen Updater)
+uv run fetch-oppo-ota direct --model PHY110 --region CN --coloros 15
+uv run fetch-oppo-ota direct --model PHY110 --region CN --coloros 15 --download
+
+# Direct query with explicit OTA version and NV Carrier ID
+uv run fetch-oppo-ota direct \
+  --model PHY110 \
+  --region CN \
+  --nv-id 10010111 \
+  --coloros 15 \
+  --ota-version PHY110_11.A.01_0001_000000000001
 ```
 
 ---
@@ -88,11 +104,12 @@ uv run fetch-oppo-ota download --device-id <ID1> --device-id <ID2> -c 8 -p 2 --g
 ```text
 src/fetch_oppo_ota/
 ├── api.py         # Async Oxygen Updater API v2.10 client (httpx)
-├── cli.py         # CLI entrypoint & headless subcommands (list, info, download)
+├── oplus_api.py   # Direct OPPO / Oplus update/v5 & v3 encrypted client (cryptography)
+├── cli.py         # CLI entrypoint & headless subcommands (list, info, download, direct)
 ├── config.py      # Cross-platform persistent settings (platformdirs)
 ├── downloader.py  # Multi-connection, resumable, rate-limited parallel download engine
 ├── models.py      # Data models, device/region/model parsing, formatting helpers
-└── tui.py         # Single-screen Textual TUI & Settings modal
+└── tui.py         # Single-screen Textual TUI, Direct OPPO & Settings modals
 ```
 
 ---

@@ -24,6 +24,7 @@ from .api import OxygenUpdaterApi, pick_default_full_method
 from .config import load_settings
 from .downloader import DownloadManager
 from .models import DownloadJob, DownloadStatus, format_bytes, parse_speed_limit
+from .oplus_api import OplusOtaClient
 from .tui import FetchOtaApp
 
 console = Console()
@@ -221,6 +222,110 @@ async def _cmd_download(
             await manager.aclose()
 
 
+async def _cmd_direct(
+    *,
+    model: str,
+    region: str,
+    ota_version: str | None,
+    coloros_major: int,
+    nv_id: str | None,
+    do_download: bool,
+    output_dir: Path,
+    connections: int,
+    max_parallel: int,
+    global_limit_bps: int,
+    file_limit_bps: int,
+    verify_md5: bool,
+) -> int:
+    async with OplusOtaClient() as client:
+        update = await client.query_latest_ota(
+            model=model,
+            region=region,
+            ota_version=ota_version,
+            coloros_major=coloros_major,
+            nv_id=nv_id,
+        )
+
+    console.print(f"[bold]Model:[/bold]        {model.upper()} ({region.upper()})")
+    console.print(f"[bold]Version:[/bold]      {update.version_number}")
+    console.print(f"[bold]OTA Version:[/bold]  {update.ota_version_number}")
+    console.print(f"[bold]Size:[/bold]         {format_bytes(update.download_size)}")
+    console.print(f"[bold]MD5:[/bold]          {update.md5sum}")
+    console.print(f"[bold]Download URL:[/bold] {update.download_url}")
+    if update.changelog:
+        console.print(f"\n[bold]Info:[/bold]\n{update.changelog}")
+
+    if not do_download:
+        return 0
+
+    progress = Progress(
+        TextColumn("[bold blue]{task.fields[filename]}", justify="right"),
+        BarColumn(bar_width=None),
+        "[progress.percentage]{task.percentage:>5.1f}%",
+        "•",
+        DownloadColumn(),
+        "•",
+        TransferSpeedColumn(),
+        "•",
+        TimeRemainingColumn(),
+        TextColumn("[dim]{task.fields[status]}[/dim]"),
+        console=console,
+    )
+    task_map: dict[str, TaskID] = {}
+
+    def on_update(job: DownloadJob) -> None:
+        tid = task_map.get(job.job_id)
+        if tid is None:
+            return
+        status_text = (
+            f"{job.status.value} ({job.active_connections}/{job.connections})"
+            if job.status == DownloadStatus.DOWNLOADING
+            else job.status.value
+        )
+        progress.update(
+            tid,
+            total=job.total_bytes or None,
+            completed=job.downloaded_bytes,
+            status=status_text,
+        )
+
+    async with OxygenUpdaterApi() as api:
+        manager = DownloadManager(
+            api,
+            max_parallel=max_parallel,
+            default_connections=connections,
+            global_speed_limit_bps=global_limit_bps,
+            per_file_speed_limit_bps=file_limit_bps,
+            on_update=on_update,
+        )
+        try:
+            with progress:
+                job = manager.enqueue(
+                    device_id=0,
+                    device_name=f"{model.upper()} ({region.upper()})",
+                    method_id=0,
+                    method_name=f"Direct OPPO ({region.upper()})",
+                    update_data=update,
+                    output_dir=output_dir,
+                    model_number=f"{model.upper()} ({region.upper()})",
+                    connections=connections,
+                    verify_md5=verify_md5,
+                )
+                task_map[job.job_id] = progress.add_task(
+                    job.job_id,
+                    filename=job.output_path.name,
+                    total=job.total_bytes or None,
+                    status=job.status.value,
+                )
+                await manager.wait_all()
+            if job.status == DownloadStatus.FAILED:
+                console.print(f"[red]Failed: {job.error}[/red]")
+                return 1
+            return 0
+        finally:
+            await manager.aclose()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fetch-oppo-ota",
@@ -293,6 +398,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_dl.add_argument("--method-id", type=int, help="Optional explicit method ID")
 
+    p_direct = sub.add_parser(
+        "direct",
+        help="Query OPPO's official update/v3 server directly (no Oxygen Updater)",
+    )
+    p_direct.add_argument("--model", required=True, help="Device model (e.g. CPH2791)")
+    p_direct.add_argument(
+        "--region",
+        default="GL",
+        choices=["GL", "EU", "IN", "CN"],
+        help="Server region (default: GL)",
+    )
+    p_direct.add_argument("--ota-version", help="Optional base OTA version string")
+    p_direct.add_argument(
+        "--nv-id",
+        help="Optional NV carrier ID (e.g. 00110011 for ID, 01000100 for EU)",
+    )
+    p_direct.add_argument(
+        "--coloros",
+        type=int,
+        default=15,
+        help="ColorOS major version 11-16 (default: 15)",
+    )
+    p_direct.add_argument(
+        "--download",
+        action="store_true",
+        help="Download the OTA immediately after querying",
+    )
+
     return parser
 
 
@@ -337,6 +470,23 @@ def main() -> int:
             _cmd_download(
                 device_ids=args.device_id,
                 method_id=args.method_id,
+                output_dir=output_dir,
+                connections=connections,
+                max_parallel=max_parallel,
+                global_limit_bps=global_limit_bps,
+                file_limit_bps=file_limit_bps,
+                verify_md5=verify_md5,
+            )
+        )
+    if args.command == "direct":
+        return asyncio.run(
+            _cmd_direct(
+                model=args.model,
+                region=args.region,
+                ota_version=args.ota_version,
+                coloros_major=args.coloros,
+                nv_id=args.nv_id,
+                do_download=args.download,
                 output_dir=output_dir,
                 connections=connections,
                 max_parallel=max_parallel,
